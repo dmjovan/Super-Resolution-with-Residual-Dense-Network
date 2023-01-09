@@ -108,6 +108,8 @@ class SuperResolutionHandler:
         start_time = time.strftime(time_format)
         logger.info(f"Training started at: {start_time}")
 
+        self.net.train()
+
         for epoch in range(self.hyper_parameters.get_param("num_epochs")):
 
             # Decaying learning rate
@@ -152,7 +154,7 @@ class SuperResolutionHandler:
             # Storing and logging
             if epoch % 10 == 0:
                 logger.info(f"Finished epoch {epoch} at {time.strftime(time_format)}. Current loss: {running_loss}")
-                self.save(folder_name=f"models_{start_time}", file_name="{epoch_i}.pt", running_loss=running_loss)
+                self.save(folder_name=f"models_{start_time}", file_name=f"{epoch}.pt", running_loss=running_loss)
 
     def test(self):
         """ Testing  """
@@ -190,7 +192,8 @@ class SuperResolutionHandler:
     def save(self, folder_name: str, file_name: str, running_loss: float) -> None:
 
         # Creating folder
-        os.mkdir(os.path.join(os.getcwd(), f"experiments/{folder_name}"))
+        if not os.path.exists(os.path.join(os.getcwd(), f"experiments/{folder_name}")):
+            os.mkdir(os.path.join(os.getcwd(), f"experiments/{folder_name}"))
 
         # Saving hyper-parameters
         self.hyper_parameters.save_params(file_name=f"hyper_parameters.json")
