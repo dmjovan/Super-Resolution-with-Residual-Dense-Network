@@ -1,9 +1,9 @@
 import json
-import logging
+import logger as logger
 import os
 from typing import Dict, Union, Any
 
-logger = logging.getLogger(__name__)
+_logger = logger.get_logger(__name__)
 
 
 class SuperResolutionParams:
@@ -20,7 +20,12 @@ class SuperResolutionParams:
                 self.params = json.load(file)
 
                 if not isinstance(self.params, dict):
-                    logger.error("Hyper-parameters are not properly read!")
+                    _logger.error("Hyper-parameters are not properly read!")
+
+    def __str__(self) -> str:
+
+        if isinstance(self.params, dict):
+            return str(self.params)
 
     def get_params(self) -> Dict[str, Union[int, float]]:
         return self.params
@@ -36,11 +41,9 @@ class SuperResolutionParams:
     def add_param(self, key: str, value: Any):
         self.params[key] = value
 
-    def save_params(self, file_name: str) -> None:
+    def save_params(self, file_path: str) -> None:
 
-        path = os.path.join(os.getcwd(), f"experiments/{file_name}")
+        with open(file_path, mode="w", encoding="utf-8") as file:
+            json.dump(self.params, file, indent=2)
 
-        with open(path, mode="w", encoding="utf-8") as file:
-            json.dump(self.params, file)
-
-        logger.info(f"Experiment hyper-parameters are stored on the following path: \n{path}")
+        _logger.info(f"Experiment hyper-parameters stored on the path: {file_path}")

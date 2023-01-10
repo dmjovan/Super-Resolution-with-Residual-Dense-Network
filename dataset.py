@@ -2,7 +2,6 @@ import os
 import random
 
 import cv2
-import natsort
 import numpy as np
 from torch.utils.data import Dataset
 
@@ -10,17 +9,15 @@ from torch.utils.data import Dataset
 class SuperResolutionDataset(Dataset):
 
     def __init__(self, dir_path: str) -> None:
-        self.dir_path = dir_path
+        self.main_dir = dir_path
+        self.images = sorted(os.listdir(self.main_dir), key=lambda x: int(x[:-4]))
 
-        all_imgs = os.listdir(dir_path)
-
-        self.total_imgs = natsort.natsorted(all_imgs)
         self.train_len = int(0.9 * len(self))
         self.test_len = 10
         self.val_len = len(self) - self.train_len - self.test_len
 
     def __len__(self):
-        return len(self.total_imgs)
+        return len(self.images)
 
     def __getitem__(self, item):
         pass
