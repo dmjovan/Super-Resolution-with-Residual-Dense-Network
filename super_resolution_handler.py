@@ -3,11 +3,11 @@ import time
 from typing import Optional
 
 import cv2
-import logger as logger
 import numpy as np
 import torch
 from torch import optim
 
+import logger as logger
 from dataset import SuperResolutionDataset
 from image_utils import downscale_image, upscale_image
 from loss import CombinedLoss
@@ -37,9 +37,15 @@ class SuperResolutionHandler:
         self.dataset = SuperResolutionDataset(self.dataset_path)
         _logger.info(f"Dataset loaded from the path: {self.dataset_path}")
 
+        if self.mode == "train":
+            _logger.info(str(self.dataset))
+
         # Hyper-parameters
         self.hyper_parameters = SuperResolutionParams(self.hyper_params_path)
         _logger.info(f"Hyper-parameters loaded from the path: {self.hyper_params_path}")
+
+        if self.mode == "train":
+            _logger.info(str(self.hyper_parameters))
 
         # Device
         self.device = torch.device("cpu")
@@ -66,7 +72,7 @@ class SuperResolutionHandler:
         if self.mode not in ["train", "test"]:
             _logger.error("Program argument 'mode' can be either 'train' or 'test'.")
         else:
-            _logger.info(f"Super Resolution mode set to {self.mode}")
+            _logger.info(f"{self.mode.upper()} mode selected")
 
         if self.mode == "train" and self.model_path and os.path.exists(self.model_path):
             _logger.warning("Training on pretrained model is not supported. Proceeding with training from scratch.")
@@ -128,9 +134,7 @@ class SuperResolutionHandler:
                 decay_learning_rate()
 
             running_loss = 0.0
-            for batch_i in range(
-                    int(self.hyper_parameters.get_param("backpropagations_per_epoch") / self.hyper_parameters.get_param(
-                        "batch_size"))):
+            for _ in range(self.hyper_parameters.get_param("num_batches_per_epoch")):
 
                 # Getting batch from dataset
                 batch = self.dataset.get_train_batch(batch_size=self.hyper_parameters.get_param("batch_size"),
@@ -160,7 +164,8 @@ class SuperResolutionHandler:
                     self.optimizer.step()
 
                     # Calculating running loss
-                    running_loss += loss.item() / self.hyper_parameters.get_param("backpropagations_per_epoch")
+                    running_loss += loss.item() / (self.hyper_parameters.get_param(
+                        "num_batches_per_epoch") * self.hyper_parameters.get_param("batch_size"))
 
             _logger.info(f"Finished epoch {epoch} at {time.strftime(time_format)}. Current loss: {running_loss}")
 
@@ -190,26 +195,28 @@ class SuperResolutionHandler:
             test_image = cv2.imread(self.test_image_path)
             _logger.info(f"Test image loaded from the path: {self.test_image_path}")
         else:
-            test_image = self.dataset.get_random_test_image(crop_len=500)
+            test_image = self.dataset.get_random_test_image()
             _logger.info(f"Test image loaded from dataset")
 
-        # TODO: add printing of test image dimensions H, W, C
+        h, w = test_image.shape[0:2]
+        _logger.info(f"Test image resolution [H x W]:  {h} x {w}")
 
         _logger.info(f"Evaluation of Super Resolution model started")
 
-        input_image = downscale_image(test_image, ratio=2)
-        upscaled_image = upscale_image(input_image, ratio=2)
-        input_image = self.np_to_tensor(input_image)
-        output = self.net(input_image)
-        output = self.tensor_to_np(output)
+        with torch.no_grad():
+            input_image = downscale_image(test_image)
+            upscaled_image = upscale_image(input_image)
+            input_image = self.np_to_tensor(input_image)
+            output = self.net(input_image)
+            output = self.tensor_to_np(output)
 
-        _logger.info(f"Evaluation of Super Resolution model finished")
+            _logger.info(f"Evaluation of Super Resolution model finished")
 
-        # TODO: add better representation and saving of images
+            # TODO: add better representation and saving of images
 
-        cv2.imwrite("output.png", output)
-        cv2.imwrite("target.png", test_image)
-        cv2.imwrite("input.png", upscaled_image)
+            cv2.imwrite("output.png", output)
+            cv2.imwrite("target.png", test_image)
+            cv2.imwrite("input.png", upscaled_image)
 
     def save(self, folder_name: str, file_name: str, running_loss: float) -> None:
         """ Saving all model parameters, hyper-parameters, optimizer data and loss. """

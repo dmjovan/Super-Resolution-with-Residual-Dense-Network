@@ -1,12 +1,12 @@
 {
-  "crop_size": 32,
+  "ratio": 2,
+  "lr": 0.0001,
   "batch_size": 16,
   "num_epochs": 201,
-  "backpropagations_per_epoch": 1024,
+  "num_batches_per_epoch": 64,
+  "crop_size": 32,
   "G0": 64,
   "G": 64,
   "d": 20,
-  "c": 6,
-  "ratio": 2,
-  "lr": 0.0001
+  "c": 6
 }
