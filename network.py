@@ -2,89 +2,109 @@ from typing import Dict, Union
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 
-class ShallowFeatureExtraction(nn.Module):
+class DenseLayer(nn.Module):
 
-    def __init__(self, in_: int, out_: int) -> None:
-        super(ShallowFeatureExtraction, self).__init__()
+    def __init__(self, in_channels, out_channels):
+        super(DenseLayer, self).__init__()
 
-        self.conv = nn.Conv2d(in_channels=in_, out_channels=out_, kernel_size=(3, 3), padding=1)
+        self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=(3, 3), padding=1)
+        self.relu = nn.ReLU(inplace=True)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.conv(x)
+    def forward(self, x):
+        # Concatenating all features extracted for Contiguous Memory (CM)
+        return torch.cat([x, self.relu(self.conv(x))], 1)
 
 
 class ResidualDenseBlock(nn.Module):
 
-    def __init__(self, G0: int = 64, G: int = 64, c: int = 6) -> None:
-
+    def __init__(self, in_channels: int, growth_rate: int, num_layers: int):
         super(ResidualDenseBlock, self).__init__()
 
-        layer_list = []
-        for i in range(c):
-            in_dim = G0 + i * G
-            layer_list.append(nn.Conv2d(in_channels=in_dim, out_channels=G, kernel_size=(3, 3), padding=1))
+        self.layers = nn.Sequential(
+            *[DenseLayer(in_channels=in_channels + growth_rate * i, out_channels=growth_rate) for i in
+              range(num_layers)])
 
-        self.layers = nn.ModuleList(layer_list)
-        self.final_conv = nn.Conv2d(in_channels=(G0 + c * G), out_channels=G0, kernel_size=(1, 1))
+        # Creating channel reducing convolution - Local-Feature-Fusion (LFF)
+        self.lff = nn.Conv2d(in_channels + growth_rate * num_layers, growth_rate, kernel_size=(1, 1))
 
-    def forward(self, x_: torch.Tensor) -> torch.Tensor:
-
-        ins = [x_]
-        for layer in self.layers:
-            x = F.relu(layer(torch.cat(ins, dim=1)))
-            ins.append(x)
-
-        x = torch.cat(ins, dim=1)
-        x = self.final_conv(x)
-        return x + x_
+    def forward(self, x):
+        # Local-Residual-Learning
+        return x + self.lff(self.layers(x))
 
 
 class SuperResolutionNetwork(nn.Module):
+    """ Implementation of Residual Dense Network - Super Resolution Network """
 
     def __init__(self, hyper_parameters: Dict[str, Union[int, str, float]]) -> None:
-
         super(SuperResolutionNetwork, self).__init__()
 
-        self.G0 = hyper_parameters["G0"]
-        self.G = hyper_parameters["G"]
-        self.ratio = hyper_parameters["ratio"]
-        self.d = hyper_parameters["d"]
-        self.c = hyper_parameters["c"]
+        self.num_channels = hyper_parameters["num_image_channels"]
+        self.D = hyper_parameters["num_residual_dense_blocks"]
+        self.G0 = hyper_parameters["num_features"]
+        self.G = hyper_parameters["growth_rate"]
+        self.c = hyper_parameters["num_layers"]
+        self.scale = hyper_parameters["scale"]
 
-        if self.G0 % self.ratio ** 2:
-            RuntimeError(f"Feature map count (G0) {self.G0} must be divisible by upscale ratio {self.ratio}")
+        ############################################# LOW RESOLUTION SPACE #############################################
 
-        self.pixel_shuffle = nn.PixelShuffle(self.ratio)
-        self.conv1 = ShallowFeatureExtraction(in_=3, out_=self.G0)
-        self.conv2 = ShallowFeatureExtraction(in_=self.G0, out_=self.G0)
+        # Creating SFENet (Shallow-Feature-Extraction Net)
+        self.sfe1 = nn.Conv2d(in_channels=self.num_channels, out_channels=self.G0, kernel_size=(3, 3), padding=1)
+        self.sfe2 = nn.Conv2d(in_channels=self.G0, out_channels=self.G0, kernel_size=(3, 3), padding=1)
 
-        block_list = self.d * [ResidualDenseBlock(G0=self.G0, G=self.G, c=self.c)]
-        self.blocks = nn.ModuleList(block_list)
-        self.conv3 = nn.Conv2d(in_channels=self.d * self.G0, out_channels=self.G0, kernel_size=(1, 1))
-        self.conv4 = nn.Conv2d(in_channels=self.G0, out_channels=self.G0, kernel_size=(3, 3), padding=1)
-        self.upscale_conv = nn.Conv2d(in_channels=self.G0, out_channels=self.G0, kernel_size=(3, 3), padding=1)
-        self.conv5 = nn.Conv2d(in_channels=int(self.G0 / (self.ratio ** 2)), out_channels=3, kernel_size=(3, 3),
-                               padding=1)
+        # Creating D RDBs (Residual Dense Blocks) for Local-Residual-Learning part
+        self.residual_dense_blocks = nn.ModuleList(
+            self.D * [ResidualDenseBlock(in_channels=self.G0, growth_rate=self.G, num_layers=self.c)])
+
+        # Creating 1x1 convolution for channel-dimension reduction for Dense-Feature-Fusion part
+        self.channel_reduction_conv = nn.Conv2d(in_channels=self.D * self.G0, out_channels=self.G0, kernel_size=(1, 1))
+
+        # Creating 3x3 convolution for further extraction of features for Global-Feature-Fusion part
+        self.global_feature_fusion_conv = nn.Conv2d(in_channels=self.G0, out_channels=self.G0, kernel_size=(3, 3),
+                                                    padding=1)
+
+        ############################################ HIGH RESOLUTION SPACE #############################################
+
+        # Creating UpNet for upscaling
+        self.up_net = nn.Sequential(nn.Conv2d(in_channels=self.G0, out_channels=self.G0,
+                                              kernel_size=(3, 3), padding=1),
+                                    nn.PixelShuffle(self.scale))
+
+        # Final convolution
+        self.output_conv = nn.Conv2d(in_channels=int(self.G0 / (self.scale ** 2)), out_channels=self.num_channels,
+                                     kernel_size=(3, 3), padding=1)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # Output of the first Shallow Feature Extraction
+        F_minus_1 = self.sfe1(x)
 
-        f_1 = self.conv1(x)
-        x = self.conv2(f_1)
+        # Output of the second Shallow Feature Extraction
+        F_0 = self.sfe2(F_minus_1)
 
-        block_outputs = []
-        for block in self.blocks:
-            x = block(x)
-            block_outputs.append(x)
+        # Stacking each output of each RDB - Extracting local dense features
+        residual_block_outputs = []
+        x = F_0
+        for residual_block in self.residual_dense_blocks:
+            x = residual_block(x)
+            residual_block_outputs.append(x)
 
-        x = self.conv3(torch.cat(block_outputs, dim=1))
-        x = self.conv4(x)
-        x = x + f_1
+        # Concatenating RDB outputs by channel dimension
+        concatenated_rdb_outputs = torch.cat(residual_block_outputs, dim=1)
 
-        x = self.upscale_conv(x)
-        x = self.pixel_shuffle(x)
-        x = self.conv5(x)
+        # Reducing number of channels - Dense Feature Fusion
+        x = self.channel_reduction_conv(concatenated_rdb_outputs)
+
+        # Further extraction of features - Global Feature Fusion
+        x = self.global_feature_fusion_conv(x)
+
+        # Final output of Dense Feature Fusion
+        x = x + F_minus_1
+
+        # Upscaling with sub-pixel convolution
+        x = self.up_net(x)
+
+        # Final convolution
+        x = self.output_conv(x)
 
         return x

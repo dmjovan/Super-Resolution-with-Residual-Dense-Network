@@ -18,6 +18,9 @@ class SuperResolutionParams:
         # Reading JSON file containing hyper-parameters
         self._read_params()
 
+        if "scale" not in self.params or ("scale" in self.params and self.params["scale"] != 2):
+            RuntimeError(f"Scale factor not supported. Only scale factor of 2 is supported.")
+
     def _read_params(self) -> None:
         """ Reading hyper-parameters from JSON file. """
 

@@ -2,17 +2,19 @@ import os
 import time
 from typing import Optional
 
-import cv2
+import PIL.Image as pil_image
 import numpy as np
 import torch
-from torch import optim
+import torch.backends.cudnn as cudnn
+from torch import optim, nn
+from torch.utils.data import DataLoader
+from tqdm import tqdm
 
 import logger as logger
-from dataset import SuperResolutionDataset
-from image_utils import downscale_image, upscale_image
-from loss import CombinedLoss
+from datasets import SuperResolutionTrainDataset, SuperResolutionValidationDataset
 from network import SuperResolutionNetwork
 from params import SuperResolutionParams
+from utils import Averager, rgb_to_y, denormalize_image, psnr
 
 _logger = logger.get_logger(__name__)
 
@@ -32,21 +34,9 @@ class SuperResolutionHandler:
         self.test_image_path = test_image_path
         self._validate_arguments()
 
-        # Dataset
-        self.dataset_path = os.path.join(os.getcwd(), "images")
-        self.dataset = SuperResolutionDataset(self.dataset_path)
-        _logger.info(f"Dataset loaded from the path: {self.dataset_path}")
+        torch.manual_seed(123)
 
-        if self.mode == "train":
-            _logger.info(str(self.dataset))
-
-        # Hyper-parameters
-        self.hyper_parameters = SuperResolutionParams(self.hyper_params_path)
-        _logger.info(f"Hyper-parameters loaded from the path: {self.hyper_params_path}")
-
-        if self.mode == "train":
-            _logger.info(str(self.hyper_parameters))
-
+        cudnn.benchmark = True
         # Device
         self.device = torch.device("cpu")
 
@@ -56,6 +46,35 @@ class SuperResolutionHandler:
             _logger.info(f"Device set to: {torch.cuda.get_device_name(self.device)}")
         else:
             _logger.info("Device set to: CPU")
+
+        # Hyper-parameters
+        self.hyper_parameters = SuperResolutionParams(self.hyper_params_path)
+        _logger.info(f"Hyper-parameters loaded from the path: {self.hyper_params_path}")
+
+        self.scale = self.hyper_parameters.get_param("scale")
+
+        if self.mode == "train":
+            _logger.info(str(self.hyper_parameters))
+
+        # Training dataset
+        self.train_dataset_path = os.path.join(os.getcwd(), "datasets/train/train_dataset.h5")
+        self.train_dataset = SuperResolutionTrainDataset(h5_file_path=self.train_dataset_path)
+        _logger.info(str(self.train_dataset))
+
+        # Train set dataloader
+        self.train_dataloader = DataLoader(dataset=self.train_dataset,
+                                           batch_size=self.hyper_parameters.get_param("batch_size"),
+                                           shuffle=True,
+                                           num_workers=8,
+                                           pin_memory=True)
+
+        # Validation dataset
+        self.validation_dataset_path = os.path.join(os.getcwd(), "datasets/validation/validation_dataset.h5")
+        self.validation_dataset = SuperResolutionValidationDataset(h5_file_path=self.validation_dataset_path)
+        _logger.info(str(self.validation_dataset))
+
+        # Validation set dataloader
+        self.validation_dataloader = DataLoader(dataset=self.validation_dataset, batch_size=1)
 
         # Network
         self.net = SuperResolutionNetwork(hyper_parameters=self.hyper_parameters.get_params()).to(self.device)
@@ -78,7 +97,7 @@ class SuperResolutionHandler:
             _logger.warning("Training on pretrained model is not supported. Proceeding with training from scratch.")
 
         if self.model_path and not os.path.exists(self.model_path):
-            self.model_path = os.path.join(os.getcwd(), "models/best_model.pt")
+            self.model_path = os.path.join(os.getcwd(), "models/rdn_x2.pth")
             _logger.warning(
                 "Program argument 'model_path' you specified does not exist. Using best model from project.")
 
@@ -86,6 +105,9 @@ class SuperResolutionHandler:
             self.hyper_params_path = os.path.join(os.getcwd(), "experiments/default_hyper_params.json")
             _logger.warning(
                 "Program argument 'hyper_params_path' you specified does not exist. Using default hyper-parameters.")
+
+        if not self.test_image_path or not os.path.exists(self.test_image_path):
+            self.test_image_path = os.path.join(os.getcwd(), "demo_images/input.png")
 
     def run(self) -> None:
         """ Running SuperResolutionHandler """
@@ -98,64 +120,64 @@ class SuperResolutionHandler:
         elif self.mode == "test":
             self.test()
 
-    def np_to_tensor(self, img: np.ndarray) -> torch.Tensor:
-        return torch.unsqueeze(torch.permute(torch.Tensor(img), (2, 1, 0)), 0).to(self.device)
-
-    def tensor_to_np(self, tensor: torch.Tensor) -> torch.Tensor:
-        return torch.permute(torch.squeeze(tensor), (2, 1, 0)).detach().numpy().astype(np.uint8)
-
     def train(self) -> None:
         """ Training SuperResolutionNetwork """
 
-        def decay_learning_rate() -> None:
+        def decay_learning_rate(curr_epoch: int) -> None:
             """ Decaying learning rate - after each epochs"""
 
             last_lr = self.hyper_parameters.get_param("lr")
-            new_lr = last_lr / 5
+            new_lr = last_lr * (0.1 ** (curr_epoch // int(self.hyper_parameters.get_param("num_epochs") * 0.8)))
 
-            self.hyper_parameters.set_param("lr", value=new_lr)
+            for param_group in self.optimizer.param_groups:
+                param_group["lr"] = new_lr
 
-            self.optimizer = optim.Adam(self.net.parameters(), lr=new_lr)
             _logger.info(f"Optimizer learning rate successfully decayed to {new_lr}")
 
         # Loss to minimize
-        loss_fn = CombinedLoss()
-        self.hyper_parameters.add_param(key="loss", value=loss_fn.name)
+        loss_fn = nn.L1Loss()
+        try:
+            self.hyper_parameters.add_param(key="loss", value=loss_fn.name)
+        except AttributeError:
+            pass
 
         start_time = time.strftime(time_format)
-        _logger.info(f"Training started at: {start_time}")
+        _logger.info(f"Training started at: {time.time()}")
 
-        self.net.train()
+        best_epoch = 0
+        best_psnr = 0.0
 
-        for epoch in range(self.hyper_parameters.get_param("num_epochs")):
+        for epoch in range(1, self.hyper_parameters.get_param("num_epochs") + 1):
+
+            #################### TRAINING ####################
 
             # Decaying learning rate
-            if epoch > 0 and epoch % 40 == 0:  # FIXME
-                decay_learning_rate()
+            decay_learning_rate(curr_epoch=epoch)
 
-            running_loss = 0.0
-            for _ in range(self.hyper_parameters.get_param("num_batches_per_epoch")):
+            self.net.train()
+            epoch_losses = Averager()
 
-                # Getting batch from dataset
-                batch = self.dataset.get_train_batch(batch_size=self.hyper_parameters.get_param("batch_size"),
-                                                     crop_size=self.hyper_parameters.get_param("crop_size"))
+            with tqdm(total=(len(self.train_dataset) -
+                             len(self.train_dataset) % self.hyper_parameters.get_param("batch_size")), ncols=80) as t:
+                t.set_description(f"Epoch: {epoch}/{self.hyper_parameters.get_param('num_epochs') - 1}")
 
-                # Running training network on each image from batch
-                for img in batch:
-                    # Zeroing gradients
-                    self.optimizer.zero_grad()
+                for data in self.train_dataloader:
+                    # Reading images
+                    inputs, targets = data
 
-                    # Downscaling image for smaller resolution
-                    input_image = self.np_to_tensor(downscale_image(img))
+                    inputs = inputs.to(self.device)
+                    targets = targets.to(self.device)
 
-                    # Storing normal resolution image
-                    target = self.np_to_tensor(img)
-
-                    # Gathering output from SuperResolutionNetwork for downscaled input image
-                    output = self.net(input_image)
+                    # Running LR input images through the Super Resolution Residual Dense Network
+                    outputs = self.net(inputs)
 
                     # Calculating loss function
-                    loss = loss_fn(output, target)
+                    loss = loss_fn(outputs, targets)
+
+                    epoch_losses.update(loss.item(), len(inputs))
+
+                    # Zeroing gradients
+                    self.optimizer.zero_grad()
 
                     # Calculating gradients while doing backpropagation
                     loss.backward()
@@ -163,17 +185,48 @@ class SuperResolutionHandler:
                     # Applying gradients on parameters
                     self.optimizer.step()
 
-                    # Calculating running loss
-                    running_loss += loss.item() / (self.hyper_parameters.get_param(
-                        "num_batches_per_epoch") * self.hyper_parameters.get_param("batch_size"))
+                    t.set_postfix(loss="{:.6f}".format(epoch_losses.avg))
+                    t.update(len(inputs))
 
-            _logger.info(f"Finished epoch {epoch} at {time.strftime(time_format)}. Current loss: {running_loss}")
+            _logger.info(f"Finished epoch {epoch} at {time.time()}. Current loss: {loss}")
 
             # Storing parameters
             if epoch % 10 == 0:
-                self.save(folder_name=f"models_{start_time}", file_name=f"model_{epoch}.pt", running_loss=running_loss)
+                self.save(folder_name=f"models_{start_time}", file_name=f"model_{epoch}.pt")
 
-        _logger.info(f"Training finished at: {time.strftime(time_format)}")
+            #################### VALIDATION/EVALUATION AFTER EACH EPOCH ####################
+
+            self.net.eval()
+            epoch_psnr = Averager()
+
+            for data in self.validation_dataloader:
+                # Reading images
+                inputs, targets = data
+
+                inputs = inputs.to(self.device)
+                targets = targets.to(self.device)
+
+                # Running LR input images through the Super Resolution Residual Dense Network
+                with torch.no_grad():
+                    outputs = self.net(inputs)
+
+                # Calculation of PSNR for Y componenet of outputs and targets
+                outputs = rgb_to_y(denormalize_image(outputs.squeeze(0)), layout='chw')
+                targets = rgb_to_y(denormalize_image(targets.squeeze(0)), layout='chw')
+
+                outputs = outputs[self.scale:-self.scale, self.scale:-self.scale]
+                targets = targets[self.scale:-self.scale, self.scale:-self.scale]
+
+                epoch_psnr.update(psnr(outputs, targets), len(inputs))
+
+            _logger.info(f"Validation PSNR: {epoch_psnr.avg:.2f}")
+
+            if epoch_psnr.avg > best_psnr:
+                best_epoch = epoch
+                best_psnr = epoch_psnr.avg
+
+        _logger.info(f"Training finished at: {time.time()}")
+        print(f"Best epoch: {best_epoch}, psnr: {best_psnr:.2f}")
 
     def test(self):
         """ Testing Super Resolution """
@@ -192,34 +245,47 @@ class SuperResolutionHandler:
 
         # Loading test image
         if self.test_image_path and os.path.exists(self.test_image_path):
-            test_image = cv2.imread(self.test_image_path)
+            test_image = pil_image.open(self.test_image_path).convert('RGB')
             _logger.info(f"Test image loaded from the path: {self.test_image_path}")
         else:
-            test_image = self.dataset.get_random_test_image()
-            _logger.info(f"Test image loaded from dataset")
+            test_image = pil_image.open(self.test_image_path).convert('RGB')
+            _logger.info(f"Specified test image path does not exist. Default test image loaded")
 
-        h, w = test_image.shape[0:2]
-        _logger.info(f"Test image resolution [H x W]:  {h} x {w}")
+        _logger.info(f"Test image resolution [H x W]:  {test_image.height} x {test_image.width}")
+
+        test_image_width = (test_image.width // self.scale) * self.scale
+        test_image_height = (test_image.height // self.scale) * self.scale
+
+        hr = test_image.resize((test_image_width, test_image_height), resample=pil_image.BICUBIC)
+        lr = hr.resize((hr.width // self.scale, hr.height // self.scale), resample=pil_image.BICUBIC)
+        bicubic = lr.resize((lr.width * self.scale, lr.height * self.scale), resample=pil_image.BICUBIC)
+        bicubic.save(self.test_image_path.replace(".", f"_bicubic_x{self.scale}."))
+
+        lr = np.expand_dims(np.array(lr).astype(np.float32).transpose([2, 0, 1]), 0) / 255.0
+        hr = np.expand_dims(np.array(hr).astype(np.float32).transpose([2, 0, 1]), 0) / 255.0
+
+        low_res = torch.from_numpy(lr).to(self.device)
+        high_res = torch.from_numpy(hr).to(self.device)
 
         _logger.info(f"Evaluation of Super Resolution model started")
 
         with torch.no_grad():
-            input_image = downscale_image(test_image)
-            upscaled_image = upscale_image(input_image)
-            input_image = self.np_to_tensor(input_image)
-            output = self.net(input_image)
-            output = self.tensor_to_np(output)
+            output = self.net(low_res).squeeze(0)
 
-            _logger.info(f"Evaluation of Super Resolution model finished")
+        output_y = rgb_to_y(denormalize_image(output), layout="chw")
+        high_res_y = rgb_to_y(denormalize_image(high_res.squeeze(0)), layout="chw")
 
-            # TODO: add better representation and saving of images
+        output_y = output_y[self.scale:-self.scale, self.scale:-self.scale]
+        high_res_y = high_res_y[self.scale:-self.scale, self.scale:-self.scale]
 
-            cv2.imwrite("output.png", output)
-            cv2.imwrite("target.png", test_image)
-            cv2.imwrite("input.png", upscaled_image)
+        psnr_value = psnr(high_res_y, output_y)
+        print(f"Evaluation PSNR: {psnr_value:.2f}")
 
-    def save(self, folder_name: str, file_name: str, running_loss: float) -> None:
-        """ Saving all model parameters, hyper-parameters, optimizer data and loss. """
+        output_img = pil_image.fromarray(denormalize_image(output.permute(1, 2, 0).byte().cpu().numpy()))
+        output_img.save(self.test_image_path.replace(".", f"_output_x{self.scale}."))
+
+    def save(self, folder_name: str, file_name: str) -> None:
+        """ Saving all model parameters, hyper-parameters and optimizer data. """
 
         # Creating folder
         if not os.path.exists(os.path.join(os.getcwd(), f"experiments/{folder_name}")):
@@ -233,7 +299,6 @@ class SuperResolutionHandler:
         # Saving net state, optimizer state and loss value
         model_path = os.path.join(os.getcwd(), f"experiments/{folder_name}/{file_name}")
         torch.save({"model_state_dict": self.net.state_dict(),
-                    "optimizer_state_dict": self.optimizer.state_dict(),
-                    "loss": running_loss}, model_path)
+                    "optimizer_state_dict": self.optimizer.state_dict()}, model_path)
 
         _logger.info(f"Saved all model and optimizer parameters on the path: {model_path}")
