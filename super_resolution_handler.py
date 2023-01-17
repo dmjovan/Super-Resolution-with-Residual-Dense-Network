@@ -18,7 +18,8 @@ from utils import Averager, rgb_to_y, denormalize_image, psnr
 
 _logger = logger.get_logger(__name__)
 
-time_format = "%d_%m_%Y_%H_%M_%S"
+time_format_for_file = "%d_%m_%Y_%H_%M_%S"
+time_format_for_log = "%d-%m-%Y %H:%M:%S"
 
 
 class SuperResolutionHandler:
@@ -141,8 +142,9 @@ class SuperResolutionHandler:
         except AttributeError:
             pass
 
-        start_time = time.strftime(time_format)
-        _logger.info(f"Training started at: {time.time()}")
+        start_time = time.strftime(time_format_for_log)
+        start_time_for_file = time.strftime(time_format_for_file)
+        _logger.info(f"Training started at: {start_time}")
 
         best_epoch = 0
         best_psnr = 0.0
@@ -150,6 +152,8 @@ class SuperResolutionHandler:
         for epoch in range(1, self.hyper_parameters.get_param("num_epochs") + 1):
 
             #################### TRAINING ####################
+
+            torch.cuda.empty_cache()
 
             # Decaying learning rate
             decay_learning_rate(curr_epoch=epoch)
@@ -188,16 +192,18 @@ class SuperResolutionHandler:
                     t.set_postfix(loss="{:.6f}".format(epoch_losses.avg))
                     t.update(len(inputs))
 
-            _logger.info(f"Finished epoch {epoch} at {time.time()}. Current loss: {loss}")
+            _logger.info(f"Finished epoch {epoch} at {time.strftime(time_format_for_log)}. Current loss: {loss}")
 
             # Storing parameters
             if epoch % 10 == 0:
-                self.save(folder_name=f"models_{start_time}", file_name=f"model_{epoch}.pt")
+                self.save(folder_name=f"models_{start_time_for_file}", file_name=f"model_{epoch}.pt")
 
             #################### VALIDATION/EVALUATION AFTER EACH EPOCH ####################
 
             self.net.eval()
             epoch_psnr = Averager()
+
+            torch.cuda.empty_cache()
 
             for data in self.validation_dataloader:
                 # Reading images
@@ -225,7 +231,7 @@ class SuperResolutionHandler:
                 best_epoch = epoch
                 best_psnr = epoch_psnr.avg
 
-        _logger.info(f"Training finished at: {time.time()}")
+        _logger.info(f"Training finished at: {time.strftime(time_format_for_log)}")
         print(f"Best epoch: {best_epoch}, psnr: {best_psnr:.2f}")
 
     def test(self):
