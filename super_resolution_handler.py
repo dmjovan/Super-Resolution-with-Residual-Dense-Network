@@ -5,7 +5,6 @@ from typing import Optional
 import PIL.Image as pil_image
 import numpy as np
 import torch
-import torch.backends.cudnn as cudnn
 from torch import optim, nn
 from torch.utils.data import DataLoader
 from tqdm import tqdm
@@ -37,7 +36,6 @@ class SuperResolutionHandler:
 
         torch.manual_seed(123)
 
-        cudnn.benchmark = True
         # Device
         self.device = torch.device("cpu")
 
@@ -153,8 +151,6 @@ class SuperResolutionHandler:
 
             #################### TRAINING ####################
 
-            torch.cuda.empty_cache()
-
             # Decaying learning rate
             decay_learning_rate(curr_epoch=epoch)
 
@@ -192,8 +188,6 @@ class SuperResolutionHandler:
                     t.set_postfix(loss="{:.6f}".format(epoch_losses.avg))
                     t.update(len(inputs))
 
-            _logger.info(f"Finished epoch {epoch} at {time.strftime(time_format_for_log)}. Current loss: {loss}")
-
             # Storing parameters
             if epoch % 10 == 0:
                 self.save(folder_name=f"models_{start_time_for_file}", file_name=f"model_{epoch}.pt")
@@ -202,8 +196,6 @@ class SuperResolutionHandler:
 
             self.net.eval()
             epoch_psnr = Averager()
-
-            torch.cuda.empty_cache()
 
             for data in self.validation_dataloader:
                 # Reading images
@@ -216,9 +208,9 @@ class SuperResolutionHandler:
                 with torch.no_grad():
                     outputs = self.net(inputs)
 
-                # Calculation of PSNR for Y componenet of outputs and targets
-                outputs = rgb_to_y(denormalize_image(outputs.squeeze(0)), layout='chw')
-                targets = rgb_to_y(denormalize_image(targets.squeeze(0)), layout='chw')
+                # Calculation of PSNR for Y component of outputs and targets
+                outputs = rgb_to_y(denormalize_image(outputs.squeeze(0)), layout="chw")
+                targets = rgb_to_y(denormalize_image(targets.squeeze(0)), layout="chw")
 
                 outputs = outputs[self.scale:-self.scale, self.scale:-self.scale]
                 targets = targets[self.scale:-self.scale, self.scale:-self.scale]

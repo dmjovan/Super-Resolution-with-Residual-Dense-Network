@@ -29,6 +29,8 @@ def psnr(img1: np.ndarray, img2: np.ndarray, max: float = 255.0) -> float:
 
 class Averager:
 
+    """ Running mean. """
+
     def __init__(self):
         self.val = 0
         self.avg = 0
