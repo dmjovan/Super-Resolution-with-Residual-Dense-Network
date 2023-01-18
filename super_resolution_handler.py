@@ -7,6 +7,7 @@ import numpy as np
 import torch
 from torch import optim, nn
 from torch.utils.data import DataLoader
+from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
 import logger as logger
@@ -23,12 +24,16 @@ time_format_for_log = "%d-%m-%Y %H:%M:%S"
 
 class SuperResolutionHandler:
 
-    def __init__(self, mode: Optional[str], model_path: Optional[str], hyper_params_path: Optional[str],
+    def __init__(self, mode: Optional[str], validation: Optional[str], bigger_dataset: Optional[str],
+                 model_path: Optional[str],
+                 hyper_params_path: Optional[str],
                  test_image_path: Optional[str]) -> None:
         """ Creating SuperResolutionHandler object and validating provided arguments. """
 
         # Arguments
         self.mode = mode
+        self.validation = True if validation == "true" else False
+        self.bigger_dataset = True if bigger_dataset == "true" else False
         self.model_path = model_path
         self.hyper_params_path = hyper_params_path
         self.test_image_path = test_image_path
@@ -56,7 +61,10 @@ class SuperResolutionHandler:
             _logger.info(str(self.hyper_parameters))
 
         # Training dataset
-        self.train_dataset_path = os.path.join(os.getcwd(), "datasets/train/train_dataset.h5")
+        if self.bigger_dataset:
+            self.train_dataset_path = os.path.join(os.getcwd(), "datasets/train/train_dataset_4000.h5")
+        else:
+            self.train_dataset_path = os.path.join(os.getcwd(), "datasets/train/train_dataset_800.h5")
         self.train_dataset = SuperResolutionTrainDataset(h5_file_path=self.train_dataset_path)
         _logger.info(str(self.train_dataset))
 
@@ -67,13 +75,14 @@ class SuperResolutionHandler:
                                            num_workers=8,
                                            pin_memory=True)
 
-        # Validation dataset
-        self.validation_dataset_path = os.path.join(os.getcwd(), "datasets/validation/validation_dataset.h5")
-        self.validation_dataset = SuperResolutionValidationDataset(h5_file_path=self.validation_dataset_path)
-        _logger.info(str(self.validation_dataset))
+        if self.validation:
+            # Validation dataset
+            self.validation_dataset_path = os.path.join(os.getcwd(), "datasets/validation/validation_dataset.h5")
+            self.validation_dataset = SuperResolutionValidationDataset(h5_file_path=self.validation_dataset_path)
+            _logger.info(str(self.validation_dataset))
 
-        # Validation set dataloader
-        self.validation_dataloader = DataLoader(dataset=self.validation_dataset, batch_size=1)
+            # Validation set dataloader
+            self.validation_dataloader = DataLoader(dataset=self.validation_dataset, batch_size=1)
 
         # Network
         self.net = SuperResolutionNetwork(hyper_parameters=self.hyper_parameters.get_params()).to(self.device)
@@ -83,6 +92,9 @@ class SuperResolutionHandler:
         self.optimizer = optim.Adam(params=self.net.parameters(), lr=self.hyper_parameters.get_param("lr"))
         _logger.info(
             f"Optimizer [Adam] successfully created with learning rate {self.hyper_parameters.get_param('lr')}")
+
+        # Tensorboard summary writer on the default runs folder
+        self.summary_writer = SummaryWriter()
 
     def _validate_arguments(self) -> None:
         """ Validating arguments from command line. Redefining model_path if provided does not exist. """
@@ -144,9 +156,6 @@ class SuperResolutionHandler:
         start_time_for_file = time.strftime(time_format_for_file)
         _logger.info(f"Training started at: {start_time}")
 
-        best_epoch = 0
-        best_psnr = 0.0
-
         for epoch in range(1, self.hyper_parameters.get_param("num_epochs") + 1):
 
             #################### TRAINING ####################
@@ -188,43 +197,42 @@ class SuperResolutionHandler:
                     t.set_postfix(loss="{:.6f}".format(epoch_losses.avg))
                     t.update(len(inputs))
 
+                self.summary_writer.add_scalar("Loss/train", epoch_losses.avg, epoch)
+
             # Storing parameters
             if epoch % 10 == 0:
                 self.save(folder_name=f"models_{start_time_for_file}", file_name=f"model_{epoch}.pt")
 
-            #################### VALIDATION/EVALUATION AFTER EACH EPOCH ####################
+            ################### VALIDATION/EVALUATION AFTER EACH EPOCH ####################
 
-            self.net.eval()
-            epoch_psnr = Averager()
+            if self.validation:
 
-            for data in self.validation_dataloader:
-                # Reading images
-                inputs, targets = data
+                self.net.eval()
+                epoch_psnr = Averager()
 
-                inputs = inputs.to(self.device)
-                targets = targets.to(self.device)
+                for data in self.validation_dataloader:
+                    # Reading images
+                    inputs, targets = data
 
-                # Running LR input images through the Super Resolution Residual Dense Network
-                with torch.no_grad():
-                    outputs = self.net(inputs)
+                    inputs = inputs.to(self.device)
+                    targets = targets.to(self.device)
 
-                # Calculation of PSNR for Y component of outputs and targets
-                outputs = rgb_to_y(denormalize_image(outputs.squeeze(0)), layout="chw")
-                targets = rgb_to_y(denormalize_image(targets.squeeze(0)), layout="chw")
+                    # Running LR input images through the Super Resolution Residual Dense Network
+                    with torch.no_grad():
+                        outputs = self.net(inputs)
 
-                outputs = outputs[self.scale:-self.scale, self.scale:-self.scale]
-                targets = targets[self.scale:-self.scale, self.scale:-self.scale]
+                    # Calculation of PSNR for Y component of outputs and targets
+                    outputs = rgb_to_y(denormalize_image(outputs.squeeze(0)), layout="chw")
+                    targets = rgb_to_y(denormalize_image(targets.squeeze(0)), layout="chw")
 
-                epoch_psnr.update(psnr(outputs, targets), len(inputs))
+                    outputs = outputs[self.scale:-self.scale, self.scale:-self.scale]
+                    targets = targets[self.scale:-self.scale, self.scale:-self.scale]
 
-            _logger.info(f"Validation PSNR: {epoch_psnr.avg:.2f}")
+                    epoch_psnr.update(psnr(outputs, targets), len(inputs))
 
-            if epoch_psnr.avg > best_psnr:
-                best_epoch = epoch
-                best_psnr = epoch_psnr.avg
+                _logger.info(f"Validation PSNR: {epoch_psnr.avg:.2f}")
 
         _logger.info(f"Training finished at: {time.strftime(time_format_for_log)}")
-        print(f"Best epoch: {best_epoch}, psnr: {best_psnr:.2f}")
 
     def test(self):
         """ Testing Super Resolution """

@@ -14,9 +14,9 @@ VALIDATION_DATASET_PATH = "datasets/validation/images"
 SCALE = 2
 
 
-def prepare_train_dataset():
+def prepare_train_dataset_with_five_crop():
     # Creating .h5 file
-    h5_file = h5py.File(os.path.join(os.getcwd(), "datasets/train/train_dataset.h5"), "w")
+    h5_file = h5py.File(os.path.join(os.getcwd(), "datasets/train/train_dataset_4000.h5"), "w")
 
     # Creating low_resolution and high_resolution groups:
     # low_resolution == inputs
@@ -50,6 +50,43 @@ def prepare_train_dataset():
             hr_group.create_dataset(str(patch_idx), data=hr)
 
             patch_idx += 1
+
+        _logger.info(f"Finished image {image_name}")
+
+    h5_file.close()
+
+
+def prepare_train_dataset_with_random_crop():
+    # Creating .h5 file
+    h5_file = h5py.File(os.path.join(os.getcwd(), "datasets/train/train_dataset_800.h5"), "w")
+
+    # Creating low_resolution and high_resolution groups:
+    # low_resolution == inputs
+    # high_resolution == targets/labels
+
+    lr_group = h5_file.create_group("low_resolution")
+    hr_group = h5_file.create_group("high_resolution")
+
+    image_names = sorted(os.listdir(TRAIN_DATASET_PATH), key=lambda x: int(x[:-4]))
+    patch_idx = 0
+
+    for i, image_name in enumerate(image_names):
+
+        # Loading high resolution image
+        hr = pil_image.open(os.path.join(os.getcwd(), f"{TRAIN_DATASET_PATH}/{image_name}")).convert("RGB")
+
+        cropped_hr_image = transforms.RandomCrop(size=(hr.height // SCALE, hr.width // SCALE))(hr)
+
+        # Applying BICUBIC degradation to low-resolution images
+        hr = hr.resize(((hr.width // SCALE) * SCALE, (hr.height // SCALE) * SCALE), resample=pil_image.BICUBIC)
+        lr = hr.resize((hr.width // SCALE, hr.height // SCALE), resample=pil_image.BICUBIC)
+
+        hr = np.array(hr)
+        lr = np.array(lr)
+
+        # Adding images into dataset
+        lr_group.create_dataset(str(i), data=lr)
+        hr_group.create_dataset(str(i), data=hr)
 
         _logger.info(f"Finished image {image_name}")
 
@@ -94,7 +131,8 @@ if __name__ == '__main__':
 
     _logger.info("Running training dataset preparation ...")
     # Preparing train dataset
-    prepare_train_dataset()
+    prepare_train_dataset_with_five_crop()
+    # prepare_train_dataset_with_random_crop()
     _logger.info("Training dataset preparation finished ...")
 
     _logger.info("Running validation dataset preparation ...")
