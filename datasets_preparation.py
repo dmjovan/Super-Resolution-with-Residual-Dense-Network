@@ -16,7 +16,7 @@ SCALE = 2
 
 def prepare_train_dataset_with_five_crop():
     # Creating .h5 file
-    h5_file = h5py.File(os.path.join(os.getcwd(), "datasets/train/train_dataset_4000.h5"), "w")
+    h5_file = h5py.File(os.path.join(os.getcwd(), "datasets/train/train_dataset_five_crop.h5"), "w")
 
     # Creating low_resolution and high_resolution groups:
     # low_resolution == inputs
@@ -58,7 +58,7 @@ def prepare_train_dataset_with_five_crop():
 
 def prepare_train_dataset_with_random_crop():
     # Creating .h5 file
-    h5_file = h5py.File(os.path.join(os.getcwd(), "datasets/train/train_dataset_800.h5"), "w")
+    h5_file = h5py.File(os.path.join(os.getcwd(), "datasets/train/train_dataset_random_crop.h5"), "w")
 
     # Creating low_resolution and high_resolution groups:
     # low_resolution == inputs
@@ -68,14 +68,14 @@ def prepare_train_dataset_with_random_crop():
     hr_group = h5_file.create_group("high_resolution")
 
     image_names = sorted(os.listdir(TRAIN_DATASET_PATH), key=lambda x: int(x[:-4]))
-    patch_idx = 0
 
     for i, image_name in enumerate(image_names):
 
         # Loading high resolution image
         hr = pil_image.open(os.path.join(os.getcwd(), f"{TRAIN_DATASET_PATH}/{image_name}")).convert("RGB")
 
-        cropped_hr_image = transforms.RandomCrop(size=(hr.height // SCALE, hr.width // SCALE))(hr)
+        # Applying random crop
+        hr = transforms.RandomCrop(size=(hr.height // SCALE, hr.width // SCALE))(hr)
 
         # Applying BICUBIC degradation to low-resolution images
         hr = hr.resize(((hr.width // SCALE) * SCALE, (hr.height // SCALE) * SCALE), resample=pil_image.BICUBIC)
@@ -93,9 +93,9 @@ def prepare_train_dataset_with_random_crop():
     h5_file.close()
 
 
-def prepare_validation_dataset():
+def prepare_validation_dataset_with_random_crop_256():
     # Creating .h5 file
-    h5_file = h5py.File(os.path.join(os.getcwd(), "datasets/validation/validation_dataset.h5"), 'w')
+    h5_file = h5py.File(os.path.join(os.getcwd(), "datasets/validation/validation_dataset_random_crop.h5"), 'w')
 
     # Creating low_resolution and high_resolution groups:
     # low_resolution == inputs
@@ -109,6 +109,9 @@ def prepare_validation_dataset():
     for i, image_name in enumerate(image_names):
         # Loading high resolution image
         hr = pil_image.open(os.path.join(os.getcwd(), f"{VALIDATION_DATASET_PATH}/{image_name}")).convert("RGB")
+
+        # Applying random crop with fixed size - 256
+        hr = transforms.RandomCrop(size=(256, 256))(hr)
 
         # Applying BICUBIC degradation to low-resolution images
         hr = hr.resize(((hr.width // SCALE) * SCALE, (hr.height // SCALE) * SCALE), resample=pil_image.BICUBIC)
@@ -132,10 +135,10 @@ if __name__ == '__main__':
     _logger.info("Running training dataset preparation ...")
     # Preparing train dataset
     prepare_train_dataset_with_five_crop()
-    # prepare_train_dataset_with_random_crop()
+    prepare_train_dataset_with_random_crop()
     _logger.info("Training dataset preparation finished ...")
 
     _logger.info("Running validation dataset preparation ...")
     # Preparing validation dataset
-    prepare_validation_dataset()
+    prepare_validation_dataset_with_random_crop_256()
     _logger.info("Validation dataset preparation finished ...")

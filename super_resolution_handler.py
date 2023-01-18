@@ -14,7 +14,7 @@ import logger as logger
 from datasets import SuperResolutionTrainDataset, SuperResolutionValidationDataset
 from network import SuperResolutionNetwork
 from params import SuperResolutionParams
-from utils import Averager, rgb_to_y, denormalize_image, psnr
+from utils import Averager, rgb_to_y, denormalize_image, psnr, randomly_crop_image
 
 _logger = logger.get_logger(__name__)
 
@@ -24,7 +24,7 @@ time_format_for_log = "%d-%m-%Y %H:%M:%S"
 
 class SuperResolutionHandler:
 
-    def __init__(self, mode: Optional[str], validation: Optional[str], bigger_dataset: Optional[str],
+    def __init__(self, mode: Optional[str], random_crop_train_dataset: Optional[str], validation: Optional[str],
                  model_path: Optional[str],
                  hyper_params_path: Optional[str],
                  test_image_path: Optional[str]) -> None:
@@ -32,8 +32,8 @@ class SuperResolutionHandler:
 
         # Arguments
         self.mode = mode
+        self.random_crop_train_dataset = True if random_crop_train_dataset == "true" else False
         self.validation = True if validation == "true" else False
-        self.bigger_dataset = True if bigger_dataset == "true" else False
         self.model_path = model_path
         self.hyper_params_path = hyper_params_path
         self.test_image_path = test_image_path
@@ -44,7 +44,7 @@ class SuperResolutionHandler:
         # Device
         self.device = torch.device("cpu")
 
-        if self.mode == "train" and torch.cuda.is_available():
+        if torch.cuda.is_available():
             self.device = torch.device("cuda:0")
             torch.cuda.empty_cache()
             _logger.info(f"Device set to: {torch.cuda.get_device_name(self.device)}")
@@ -60,29 +60,33 @@ class SuperResolutionHandler:
         if self.mode == "train":
             _logger.info(str(self.hyper_parameters))
 
-        # Training dataset
-        if self.bigger_dataset:
-            self.train_dataset_path = os.path.join(os.getcwd(), "datasets/train/train_dataset_4000.h5")
-        else:
-            self.train_dataset_path = os.path.join(os.getcwd(), "datasets/train/train_dataset_800.h5")
-        self.train_dataset = SuperResolutionTrainDataset(h5_file_path=self.train_dataset_path)
-        _logger.info(str(self.train_dataset))
+            # Training dataset
+            if self.random_crop_train_dataset:
+                self.train_dataset_path = os.path.join(os.getcwd(), "datasets/train/train_dataset_random_crop.h5")
+            else:
+                self.train_dataset_path = os.path.join(os.getcwd(), "datasets/train/train_dataset_five_crop.h5")
+            self.train_dataset = SuperResolutionTrainDataset(h5_file_path=self.train_dataset_path)
+            _logger.info(str(self.train_dataset))
 
-        # Train set dataloader
-        self.train_dataloader = DataLoader(dataset=self.train_dataset,
-                                           batch_size=self.hyper_parameters.get_param("batch_size"),
-                                           shuffle=True,
-                                           num_workers=8,
-                                           pin_memory=True)
+            # Train set dataloader
+            self.train_dataloader = DataLoader(dataset=self.train_dataset,
+                                               batch_size=self.hyper_parameters.get_param("batch_size"),
+                                               shuffle=True,
+                                               num_workers=8,
+                                               pin_memory=True)
 
-        if self.validation:
-            # Validation dataset
-            self.validation_dataset_path = os.path.join(os.getcwd(), "datasets/validation/validation_dataset.h5")
-            self.validation_dataset = SuperResolutionValidationDataset(h5_file_path=self.validation_dataset_path)
-            _logger.info(str(self.validation_dataset))
+            if self.validation:
+                # Validation dataset
+                self.validation_dataset_path = os.path.join(os.getcwd(),
+                                                            "datasets/validation/validation_dataset_random_crop.h5")
+                self.validation_dataset = SuperResolutionValidationDataset(h5_file_path=self.validation_dataset_path)
+                _logger.info(str(self.validation_dataset))
 
-            # Validation set dataloader
-            self.validation_dataloader = DataLoader(dataset=self.validation_dataset, batch_size=1)
+                # Validation set dataloader
+                self.validation_dataloader = DataLoader(dataset=self.validation_dataset, batch_size=1)
+
+                # Tensorboard summary writer on the default runs folder
+                self.summary_writer = SummaryWriter()
 
         # Network
         self.net = SuperResolutionNetwork(hyper_parameters=self.hyper_parameters.get_params()).to(self.device)
@@ -92,9 +96,6 @@ class SuperResolutionHandler:
         self.optimizer = optim.Adam(params=self.net.parameters(), lr=self.hyper_parameters.get_param("lr"))
         _logger.info(
             f"Optimizer [Adam] successfully created with learning rate {self.hyper_parameters.get_param('lr')}")
-
-        # Tensorboard summary writer on the default runs folder
-        self.summary_writer = SummaryWriter()
 
     def _validate_arguments(self) -> None:
         """ Validating arguments from command line. Redefining model_path if provided does not exist. """
@@ -199,6 +200,8 @@ class SuperResolutionHandler:
 
                 self.summary_writer.add_scalar("Loss/train", epoch_losses.avg, epoch)
 
+                _logger.info(f"Training loss in epoch {epoch}: {epoch_losses.avg:.6f}")
+
             # Storing parameters
             if epoch % 10 == 0:
                 self.save(folder_name=f"models_{start_time_for_file}", file_name=f"model_{epoch}.pt")
@@ -230,7 +233,9 @@ class SuperResolutionHandler:
 
                     epoch_psnr.update(psnr(outputs, targets), len(inputs))
 
-                _logger.info(f"Validation PSNR: {epoch_psnr.avg:.2f}")
+                self.summary_writer.add_scalar("PSNR/validation", epoch_psnr.avg, epoch)
+
+                _logger.info(f"Validation PSNR in epoch {epoch}: {epoch_psnr.avg:.2f}")
 
         _logger.info(f"Training finished at: {time.strftime(time_format_for_log)}")
 
@@ -259,11 +264,18 @@ class SuperResolutionHandler:
 
         _logger.info(f"Test image resolution [H x W]:  {test_image.height} x {test_image.width}")
 
+        if test_image.height > 500 and test_image.width > 500:
+            _logger.info(f"Randomly cropping test image into 500 x 500 size")
+            cropped_test_image = randomly_crop_image(np.array(test_image), crop_size=500)
+            test_image = pil_image.fromarray(cropped_test_image)
+            test_image.save(self.test_image_path.replace(".", f"_cropped."))
+
         test_image_width = (test_image.width // self.scale) * self.scale
         test_image_height = (test_image.height // self.scale) * self.scale
 
         hr = test_image.resize((test_image_width, test_image_height), resample=pil_image.BICUBIC)
         lr = hr.resize((hr.width // self.scale, hr.height // self.scale), resample=pil_image.BICUBIC)
+
         bicubic = lr.resize((lr.width * self.scale, lr.height * self.scale), resample=pil_image.BICUBIC)
         bicubic.save(self.test_image_path.replace(".", f"_bicubic_x{self.scale}."))
 
@@ -276,19 +288,23 @@ class SuperResolutionHandler:
         _logger.info(f"Evaluation of Super Resolution model started")
 
         with torch.no_grad():
-            output = self.net(low_res).squeeze(0)
+            output = self.net(low_res)
 
-        output_y = rgb_to_y(denormalize_image(output), layout="chw")
+        output_y = rgb_to_y(denormalize_image(output.squeeze(0)), layout="chw")
         high_res_y = rgb_to_y(denormalize_image(high_res.squeeze(0)), layout="chw")
 
         output_y = output_y[self.scale:-self.scale, self.scale:-self.scale]
         high_res_y = high_res_y[self.scale:-self.scale, self.scale:-self.scale]
 
         psnr_value = psnr(high_res_y, output_y)
-        print(f"Evaluation PSNR: {psnr_value:.2f}")
+        _logger.info(f"Evaluation PSNR: {psnr_value:.2f}")
 
-        output_img = pil_image.fromarray(denormalize_image(output.permute(1, 2, 0).byte().cpu().numpy()))
+        img_npy = output.squeeze(0).permute(1, 2, 0).detach().cpu().numpy()
+
+        output_img = pil_image.fromarray(denormalize_image(img_npy))
         output_img.save(self.test_image_path.replace(".", f"_output_x{self.scale}."))
+
+        _logger.info(f"Evaluation of Super Resolution model finished")
 
     def save(self, folder_name: str, file_name: str) -> None:
         """ Saving all model parameters, hyper-parameters and optimizer data. """
