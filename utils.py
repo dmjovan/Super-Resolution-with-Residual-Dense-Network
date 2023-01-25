@@ -27,7 +27,7 @@ def denormalize_image(img: Union[np.ndarray, torch.Tensor]) -> Union[np.ndarray,
         return img.mul(255.0).clamp(0.0, 255.0)
 
     elif isinstance(img, np.ndarray):
-        return (255 * img).astype(np.uint8)
+        return np.clip((255 * img).astype(np.uint8), a_min=0, a_max=255)
 
 
 def randomly_crop_image(img: np.ndarray, crop_size: int = 500) -> np.ndarray:
@@ -50,8 +50,7 @@ def psnr(img1: torch.Tensor, img2: torch.Tensor, max_value: float = 255.0) -> fl
     return 10. * ((max_value ** 2) / ((img1 - img2) ** 2).mean()).log10()
 
 
-class Averager:
-    """ Running mean. """
+class RunningMean:
 
     def __init__(self):
         self.val = 0

@@ -14,7 +14,7 @@ import logger as logger
 from datasets import SuperResolutionTrainDataset, SuperResolutionValidationDataset
 from network import SuperResolutionNetwork
 from params import SuperResolutionParams
-from utils import Averager, rgb_to_y, denormalize_image, psnr, randomly_crop_image
+from utils import RunningMean, rgb_to_y, denormalize_image, psnr, randomly_crop_image
 
 _logger = logger.get_logger(__name__)
 
@@ -165,7 +165,7 @@ class SuperResolutionHandler:
             decay_learning_rate(curr_epoch=epoch)
 
             self.net.train()
-            epoch_losses = Averager()
+            epoch_losses = RunningMean()
 
             with tqdm(total=(len(self.train_dataset) -
                              len(self.train_dataset) % self.hyper_parameters.get_param("batch_size")), ncols=80) as t:
@@ -211,7 +211,7 @@ class SuperResolutionHandler:
             if self.validation:
 
                 self.net.eval()
-                epoch_psnr = Averager()
+                epoch_psnr = RunningMean()
 
                 for data in self.validation_dataloader:
                     # Reading images
@@ -268,7 +268,7 @@ class SuperResolutionHandler:
             _logger.info(f"Randomly cropping test image into 500 x 500 size")
             cropped_test_image = randomly_crop_image(np.array(test_image), crop_size=500)
             test_image = pil_image.fromarray(cropped_test_image)
-            test_image.save(self.test_image_path.replace(".", f"_cropped."))
+            test_image.save(self.test_image_path.replace(".", f"_0_cropped."))
 
         test_image_width = (test_image.width // self.scale) * self.scale
         test_image_height = (test_image.height // self.scale) * self.scale
@@ -276,8 +276,10 @@ class SuperResolutionHandler:
         hr = test_image.resize((test_image_width, test_image_height), resample=pil_image.BICUBIC)
         lr = hr.resize((hr.width // self.scale, hr.height // self.scale), resample=pil_image.BICUBIC)
 
+        lr.save(self.test_image_path.replace(".", f"_1_bicubic_downsample_x{self.scale}."))
+
         bicubic = lr.resize((lr.width * self.scale, lr.height * self.scale), resample=pil_image.BICUBIC)
-        bicubic.save(self.test_image_path.replace(".", f"_bicubic_x{self.scale}."))
+        bicubic.save(self.test_image_path.replace(".", f"_2_bicubic_upsample_x{self.scale}."))
 
         lr = np.expand_dims(np.array(lr).astype(np.float32).transpose([2, 0, 1]), 0) / 255.0
         hr = np.expand_dims(np.array(hr).astype(np.float32).transpose([2, 0, 1]), 0) / 255.0
@@ -302,7 +304,7 @@ class SuperResolutionHandler:
         img_npy = output.squeeze(0).permute(1, 2, 0).detach().cpu().numpy()
 
         output_img = pil_image.fromarray(denormalize_image(img_npy))
-        output_img.save(self.test_image_path.replace(".", f"_output_x{self.scale}."))
+        output_img.save(self.test_image_path.replace(".", f"_3_output_x{self.scale}."))
 
         _logger.info(f"Evaluation of Super Resolution model finished")
 
