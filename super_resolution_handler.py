@@ -139,19 +139,16 @@ class SuperResolutionHandler:
             """ Decaying learning rate - after each epochs"""
 
             last_lr = self.hyper_parameters.get_param("lr")
-            new_lr = last_lr * (0.1 ** (curr_epoch // int(self.hyper_parameters.get_param("num_epochs") * 0.8)))
+            new_lr = last_lr * (0.1 ** int((curr_epoch % self.hyper_parameters.get_param("lr_decay_rate")) == 0))
 
             for param_group in self.optimizer.param_groups:
                 param_group["lr"] = new_lr
 
-            _logger.info(f"Optimizer learning rate successfully decayed to {new_lr}")
+            if last_lr != new_lr:
+                _logger.info(f"Optimizer learning rate successfully decayed to {new_lr}")
 
         # Loss to minimize
         loss_fn = nn.L1Loss()
-        try:
-            self.hyper_parameters.add_param(key="loss", value=loss_fn.name)
-        except AttributeError:
-            pass
 
         start_time = time.strftime(time_format_for_log)
         start_time_for_file = time.strftime(time_format_for_file)
