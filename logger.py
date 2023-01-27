@@ -5,7 +5,7 @@ def get_logger(module_name: str) -> logging.Logger:
 
     """ Setting up logger for project. """
 
-    logging.basicConfig(filename="log.txt")
+    logging.basicConfig(filename="log.txt",  filemode="w")
 
     # Creating logger
     logger = logging.getLogger(module_name)

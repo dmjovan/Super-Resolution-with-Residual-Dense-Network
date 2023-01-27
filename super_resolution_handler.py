@@ -1,4 +1,6 @@
+import json
 import os
+import shutil
 import time
 from typing import Optional
 
@@ -25,6 +27,7 @@ time_format_for_log = "%d-%m-%Y %H:%M:%S"
 class SuperResolutionHandler:
 
     def __init__(self, mode: Optional[str], random_crop_train_dataset: Optional[str], validation: Optional[str],
+                 test_experiments: Optional[str],
                  model_path: Optional[str],
                  hyper_params_path: Optional[str],
                  test_image_path: Optional[str]) -> None:
@@ -34,6 +37,7 @@ class SuperResolutionHandler:
         self.mode = mode
         self.random_crop_train_dataset = True if random_crop_train_dataset == "true" else False
         self.validation = True if validation == "true" else False
+        self.run_test_experiments = True if test_experiments == "true" else False
         self.model_path = model_path
         self.hyper_params_path = hyper_params_path
         self.test_image_path = test_image_path
@@ -51,11 +55,12 @@ class SuperResolutionHandler:
         else:
             _logger.info("Device set to: CPU")
 
-        # Hyper-parameters
-        self.hyper_parameters = SuperResolutionParams(self.hyper_params_path)
-        _logger.info(f"Hyper-parameters loaded from the path: {self.hyper_params_path}")
+        if not self.run_test_experiments:
+            # Hyper-parameters
+            self.hyper_parameters = SuperResolutionParams(self.hyper_params_path)
+            _logger.info(f"Hyper-parameters loaded from the path: {self.hyper_params_path}")
 
-        self.scale = self.hyper_parameters.get_param("scale")
+            self.scale = self.hyper_parameters.get_param("scale")
 
         if self.mode == "train":
             _logger.info(str(self.hyper_parameters))
@@ -88,14 +93,15 @@ class SuperResolutionHandler:
                 # Tensorboard summary writer on the default runs folder
                 self.summary_writer = SummaryWriter()
 
-        # Network
-        self.net = SuperResolutionNetwork(hyper_parameters=self.hyper_parameters.get_params()).to(self.device)
-        _logger.info("Super Resolution Network successfully created")
+        if not self.run_test_experiments:
+            # Network
+            self.net = SuperResolutionNetwork(hyper_parameters=self.hyper_parameters.get_params()).to(self.device)
+            _logger.info("Super Resolution Network successfully created")
 
-        # Optimizer
-        self.optimizer = optim.Adam(params=self.net.parameters(), lr=self.hyper_parameters.get_param("lr"))
-        _logger.info(
-            f"Optimizer [Adam] successfully created with learning rate {self.hyper_parameters.get_param('lr')}")
+            # Optimizer
+            self.optimizer = optim.Adam(params=self.net.parameters(), lr=self.hyper_parameters.get_param("lr"))
+            _logger.info(
+                f"Optimizer [Adam] successfully created with learning rate {self.hyper_parameters.get_param('lr')}")
 
     def _validate_arguments(self) -> None:
         """ Validating arguments from command line. Redefining model_path if provided does not exist. """
@@ -108,8 +114,8 @@ class SuperResolutionHandler:
         if self.mode == "train" and self.model_path and os.path.exists(self.model_path):
             _logger.warning("Training on pretrained model is not supported. Proceeding with training from scratch.")
 
-        if self.model_path and not os.path.exists(self.model_path):
-            self.model_path = os.path.join(os.getcwd(), "models/rdn_x2.pth")
+        if self.model_path and not os.path.exists(self.model_path) and not self.run_test_experiments:
+            self.model_path = os.path.join(os.getcwd(), "models/best_model_on_4000_images.pth")
             _logger.warning(
                 "Program argument 'model_path' you specified does not exist. Using best model from project.")
 
@@ -118,7 +124,7 @@ class SuperResolutionHandler:
             _logger.warning(
                 "Program argument 'hyper_params_path' you specified does not exist. Using default hyper-parameters.")
 
-        if not self.test_image_path or not os.path.exists(self.test_image_path):
+        if not self.test_image_path or not os.path.exists(self.test_image_path) and not self.run_test_experiments:
             self.test_image_path = os.path.join(os.getcwd(), "demo_images/input.png")
 
     def run(self) -> None:
@@ -129,8 +135,11 @@ class SuperResolutionHandler:
         if self.mode == "train":
             self.train()
 
-        elif self.mode == "test":
+        elif self.mode == "test" and not self.run_test_experiments:
             self.test()
+
+        elif self.mode == "test" and self.run_test_experiments:
+            self.test_experiments()
 
     def train(self) -> None:
         """ Training SuperResolutionNetwork """
@@ -235,6 +244,8 @@ class SuperResolutionHandler:
                 _logger.info(f"Validation PSNR in epoch {epoch}: {epoch_psnr.avg:.2f}")
 
         _logger.info(f"Training finished at: {time.strftime(time_format_for_log)}")
+        shutil.copy(os.path.join(os.getcwd(), "log.txt"),
+                    os.path.join(os.getcwd(), f"experiments/models_{start_time_for_file}/log.txt"))
 
     def test(self):
         """ Testing Super Resolution """
@@ -304,6 +315,125 @@ class SuperResolutionHandler:
         output_img.save(self.test_image_path.replace(".", f"_3_output_x{self.scale}."))
 
         _logger.info(f"Evaluation of Super Resolution model finished")
+
+    def test_experiments(self):
+        """ Testing Super Resolution on previously finished experiments """
+
+        # Extracting all experiment names
+        experiments_folder = os.path.join(os.getcwd(), "experiments")
+        experiments_names = [d for d in os.listdir(experiments_folder) if
+                             os.path.isdir(os.path.join(experiments_folder, d))]
+
+        for experiment_name in experiments_names:
+
+            # Skipping testing current experiment, since it was already tested
+            if os.path.exists(os.path.join(experiments_folder, experiment_name, "test")):
+                _logger.info(
+                    f"########################################################################################")
+                _logger.info(f"Skipping testing experiment {experiment_name} , already tested.")
+                _logger.info(
+                    f"########################################################################################")
+                continue
+
+            _logger.info(f"########################################################################################")
+            _logger.info(f"Testing experiment {experiment_name} started ...")
+            _logger.info(f"########################################################################################")
+
+            # Extracting hyper-parameters
+            hyper_params_path = os.path.join(experiments_folder, experiment_name, "hyper_parameters.json")
+            hyper_parameters = SuperResolutionParams(hyper_params_path)
+            scale = hyper_parameters.get_param("scale")
+            _logger.info(f"Hyper-parameters successfully loaded")
+
+            # Extracting last model [the best model] from experiment folder
+            model_name = \
+                sorted([file_name for file_name in os.listdir(os.path.join(experiments_folder, experiment_name))
+                        if file_name.endswith(".pt")], key=lambda x: int((x.split(".")[0])[6:]), reverse=True)[0]
+
+            model_path = os.path.join(experiments_folder, experiment_name, model_name)
+
+            # Loading checkpoint
+            checkpoint = torch.load(model_path)
+
+            # Creating network
+            net = SuperResolutionNetwork(hyper_parameters=hyper_parameters.get_params()).to(self.device)
+
+            # Loading model state
+            net.load_state_dict(checkpoint['model_state_dict'])
+            _logger.info("Super Resolution Network successfully loaded")
+
+            # Creating optimizer
+            optimizer = optim.Adam(params=net.parameters(), lr=hyper_parameters.get_param("lr"))
+
+            # Loading optimizer state
+            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            _logger.info(f"Optimizer [Adam] successfully loaded")
+
+            # Setting model into evaluation mode
+            net.eval()
+
+            # Copying test_images folder into experiment folder
+            shutil.copytree(os.path.join(os.getcwd(), "test_images"),
+                            os.path.join(experiments_folder, experiment_name, "test"))
+
+            test_image_paths = [os.path.join(experiments_folder, experiment_name, f"test/{test_name}/input.png") for
+                                test_name in os.listdir(os.path.join(experiments_folder, experiment_name, "test"))]
+
+            for test_image_path in test_image_paths:
+                # Loading test image
+                test_image = pil_image.open(test_image_path).convert('RGB')
+                _logger.info(f"---------------------------------------------------------------------------------------")
+                _logger.info(f"Test image loaded from folder '{os.path.basename(os.path.dirname(test_image_path))}'")
+                _logger.info(f"Test image resolution [H x W]:  {test_image.height} x {test_image.width}")
+
+                if test_image.height > 500 and test_image.width > 500:
+                    _logger.info(f"Randomly cropping test image into 500 x 500 size")
+                    cropped_test_image = randomly_crop_image(np.array(test_image), crop_size=500)
+                    test_image = pil_image.fromarray(cropped_test_image)
+                    test_image.save(test_image_path.replace(".", f"_0_cropped."))
+
+                test_image_width = (test_image.width // scale) * scale
+                test_image_height = (test_image.height // scale) * scale
+
+                hr = test_image.resize((test_image_width, test_image_height), resample=pil_image.BICUBIC)
+                lr = hr.resize((hr.width // scale, hr.height // scale), resample=pil_image.BICUBIC)
+
+                lr.save(test_image_path.replace(".", f"_1_bicubic_downsample_x{scale}."))
+
+                bicubic = lr.resize((lr.width * scale, lr.height * scale), resample=pil_image.BICUBIC)
+                bicubic.save(test_image_path.replace(".", f"_2_bicubic_upsample_x{scale}."))
+
+                lr = np.expand_dims(np.array(lr).astype(np.float32).transpose([2, 0, 1]), 0) / 255.0
+                hr = np.expand_dims(np.array(hr).astype(np.float32).transpose([2, 0, 1]), 0) / 255.0
+
+                low_res = torch.from_numpy(lr).to(self.device)
+                high_res = torch.from_numpy(hr).to(self.device)
+
+                _logger.info(f"Evaluation started ...")
+
+                with torch.no_grad():
+                    output = net(low_res)
+
+                output_y = rgb_to_y(denormalize_image(output.squeeze(0)), layout="chw")
+                high_res_y = rgb_to_y(denormalize_image(high_res.squeeze(0)), layout="chw")
+
+                output_y = output_y[scale:-scale, scale:-scale]
+                high_res_y = high_res_y[scale:-scale, scale:-scale]
+
+                psnr_value = float(psnr(high_res_y, output_y).cpu().numpy())
+
+                with open(os.path.join(os.path.dirname(test_image_path), "psnr_value.json"), mode="w",
+                          encoding="utf-8") as psnr_file:
+                    json.dump({"PSNR": psnr_value}, psnr_file, indent=2)
+
+                _logger.info(f"Evaluation PSNR: {psnr_value:.2f}")
+
+                img_npy = output.squeeze(0).permute(1, 2, 0).detach().cpu().numpy()
+
+                output_img = pil_image.fromarray(denormalize_image(img_npy))
+                output_img.save(test_image_path.replace(".", f"_3_output_x{scale}."))
+
+                _logger.info(f"Evaluation finished ...")
 
     def save(self, folder_name: str, file_name: str) -> None:
         """ Saving all model parameters, hyper-parameters and optimizer data. """
