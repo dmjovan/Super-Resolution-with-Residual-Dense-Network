@@ -3,6 +3,8 @@ from typing import Union
 
 import numpy as np
 import torch
+from torch import Tensor
+from torchvision.transforms import transforms
 
 import logger as logger
 
@@ -43,6 +45,12 @@ def randomly_crop_image(img: np.ndarray, crop_size: int = 500) -> np.ndarray:
     cropped_image = img[img_top:img_bottom, img_left:img_right]
 
     return cropped_image
+
+
+def central_crop_image(img: np.ndarray, crop_size: int = 500) -> np.ndarray:
+    """ Central crop of image """
+    return np.array(transforms.CenterCrop(size=(crop_size, crop_size))(Tensor(img.transpose((2, 0, 1))))).transpose(
+        (1, 2, 0)).astype(np.uint8)
 
 
 def psnr(img1: torch.Tensor, img2: torch.Tensor, max_value: float = 255.0) -> float:

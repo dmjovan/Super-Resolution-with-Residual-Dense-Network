@@ -16,7 +16,7 @@ import logger as logger
 from datasets import SuperResolutionTrainDataset, SuperResolutionValidationDataset
 from network import SuperResolutionNetwork
 from params import SuperResolutionParams
-from utils import RunningMean, rgb_to_y, denormalize_image, psnr, randomly_crop_image
+from utils import RunningMean, rgb_to_y, denormalize_image, psnr, randomly_crop_image, central_crop_image
 
 _logger = logger.get_logger(__name__)
 
@@ -115,7 +115,7 @@ class SuperResolutionHandler:
             _logger.warning("Training on pretrained model is not supported. Proceeding with training from scratch.")
 
         if self.model_path and not os.path.exists(self.model_path) and not self.run_test_experiments:
-            self.model_path = os.path.join(os.getcwd(), "models/best_model_on_4000_images.pth")
+            self.model_path = os.path.join(os.getcwd(), "models/best_model.pt")
             _logger.warning(
                 "Program argument 'model_path' you specified does not exist. Using best model from project.")
 
@@ -388,7 +388,7 @@ class SuperResolutionHandler:
 
                 if test_image.height > 500 and test_image.width > 500:
                     _logger.info(f"Randomly cropping test image into 500 x 500 size")
-                    cropped_test_image = randomly_crop_image(np.array(test_image), crop_size=500)
+                    cropped_test_image = central_crop_image(np.array(test_image), crop_size=500)
                     test_image = pil_image.fromarray(cropped_test_image)
                     test_image.save(test_image_path.replace(".", f"_0_cropped."))
 
